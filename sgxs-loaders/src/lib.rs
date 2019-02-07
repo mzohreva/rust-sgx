@@ -9,7 +9,7 @@
        html_root_url = "https://edp.fortanix.com/docs/api/")]
 
 #[macro_use]
-extern crate nix as ioctl_crate;
+extern crate nix;
 extern crate failure;
 extern crate libc;
 extern crate sgx_isa as abi;
@@ -18,10 +18,13 @@ extern crate sgxs as sgxs_crate;
 extern crate failure_derive;
 #[macro_use]
 extern crate bitflags;
+#[macro_use]
+extern crate lazy_static;
 
 mod generic;
 pub mod isgx;
 pub mod sgx_enclave_common;
+pub mod sim;
 
 use std::fmt::Debug;
 use std::os::raw::c_void;
