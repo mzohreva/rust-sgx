@@ -27,6 +27,8 @@ extern crate bitflags;
 #[cfg(all(feature = "sgxstd", target_env = "sgx"))]
 use std::os::fortanix_sgx::arch;
 
+use core::slice;
+
 #[cfg(not(feature = "large_array_derive"))]
 #[macro_use]
 mod large_array_impl;
@@ -127,7 +129,7 @@ macro_rules! struct_def {
         impl AsRef<[u8]> for $name {
             fn as_ref(&self) -> &[u8] {
                 unsafe {
-                    ::core::slice::from_raw_parts(self as *const $name as *const u8, Self::UNPADDED_SIZE)
+                    slice::from_raw_parts(self as *const $name as *const u8, Self::UNPADDED_SIZE)
                 }
             }
         }
@@ -502,6 +504,22 @@ pub struct Sigstruct {
 
 impl Sigstruct {
     pub const UNPADDED_SIZE: usize = 1808;
+
+    /// Returns that part of the `Sigstruct` that is signed. The returned
+    /// slices should be concatenated for hashing.
+    pub fn signature_data(&self) -> (&[u8], &[u8]) {
+        unsafe {
+            let part1_start = &(self.header) as *const _ as *const u8;
+            let part1_end = &(self.modulus) as *const _ as *const u8 as usize;
+            let part2_start = &(self.miscselect) as *const _ as *const u8;
+            let part2_end = &(self._reserved4) as *const _ as *const u8 as usize;
+
+            (
+                slice::from_raw_parts(part1_start, part1_end - (part1_start as usize)),
+                slice::from_raw_parts(part2_start, part2_end - (part2_start as usize))
+            )
+        }
+    }
 }
 
 struct_def! {
@@ -560,6 +578,15 @@ pub struct Report {
 impl Report {
     pub const UNPADDED_SIZE: usize = 432;
 
+    /// Generate a bogus report that can be used to obtain one's own
+    /// `Targetinfo`.
+    ///
+    /// # Examples
+    /// ```
+    /// use sgx_isa::{Report, Targetinfo};
+    ///
+    /// let targetinfo_self = Targetinfo::from(Report::for_self());
+    /// ```
     #[cfg(all(feature = "sgxstd", target_env = "sgx"))]
     pub fn for_self() -> Self {
         let reportdata = arch::Align128([0; 64]);
@@ -575,6 +602,16 @@ impl Report {
         let out = arch::ereport(targetinfo.as_ref(), &reportdata);
         // unwrap ok, `out` is the correct number of bytes
         Report::try_copy_from(&out.0).unwrap()
+    }
+
+    /// Returns that part of the `Report` that is MACed.
+    pub fn mac_data(&self) -> &[u8] {
+        unsafe {
+            slice::from_raw_parts(
+                self as *const Self as *const u8,
+                Self::UNPADDED_SIZE - ::core::mem::size_of_val(&self.keyid) - ::core::mem::size_of_val(&self.mac)
+            )
+        }
     }
 }
 

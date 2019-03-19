@@ -1,0 +1,18 @@
+[package]
+name = "sgx-tests"
+version = "0.0.0"
+edition = "2018"
+publish = false
+description = """
+Integration tests that should be run inside SGX
+"""
+
+[dependencies]
+
+[dev-dependencies]
+# Project dependencies
+"sgx-isa" = { version = "0.2.0", path = "../sgx-isa", features = ["sgxstd"] }
+
+# External dependencies
+# Need to use git for CMAC (for now)
+"mbedtls" = { git = "https://github.com/fortanix/rust-mbedtls", default-features = false, features = ["sgx"] }
