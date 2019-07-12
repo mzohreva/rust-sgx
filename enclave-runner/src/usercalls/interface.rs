@@ -13,148 +13,198 @@ use fortanix_sgx_abi::*;
 
 use super::abi::{UsercallResult, Usercalls};
 use super::{EnclaveAbort, IOHandlerInput};
+use futures::future::Future;
 
-pub(super) struct Handler<'a>(pub &'a mut IOHandlerInput<'a>);
+pub(super) struct Handler<'a>(pub IOHandlerInput<'a>);
 
-impl<'a> Usercalls for Handler<'a> {
+impl <'a> Usercalls for Handler<'a> {
+    existential type FutRetEnclaveAbort : Future <Output = EnclaveAbort<bool>>;
+    existential type FutRetclose : Future <Output = UsercallResult<()>>;
+    existential type FutRetfree : Future <Output = UsercallResult<()>>;
+    existential type FutRetread : Future <Output = UsercallResult<(Result, usize)>>;
+    existential type FutRetread_alloc : Future <Output = UsercallResult<Result>>;
+    existential type FutRetwrite : Future <Output = UsercallResult<(Result, usize)>>;
+    existential type FutRetflush : Future <Output = UsercallResult<Result>>;
+    existential type FutRetbind_stream : Future <Output = UsercallResult<(Result, Fd)>>;
+    existential type FutRetaccept_stream : Future <Output = UsercallResult<(Result, Fd)>>;
+    existential type FutRetconnect_stream : Future <Output = UsercallResult<(Result, Fd)>>;
+    existential type FutRetlaunch_thread : Future <Output = UsercallResult<Result>>;
+    existential type FutRetwait : Future <Output = UsercallResult<(Result, u64)>>;
+    existential type FutRetsend : Future <Output = UsercallResult<Result>>;
+    existential type FutRetinsecure_time : Future <Output = UsercallResult<u64>>;
+    existential type FutRetalloc : Future <Output = UsercallResult<(Result, *mut u8)>>;
+    existential type FutRetasync_queues : Future <Output = UsercallResult<Result>>;
+
     fn is_exiting(&self) -> bool {
         self.0.is_exiting()
     }
 
-    fn read(&mut self, fd: Fd, buf: *mut u8, len: usize) -> UsercallResult<(Result, usize)> {
-        unsafe {
-            Ok(from_raw_parts_mut_nonnull(buf, len)
-                .and_then(|buf| self.0.read(fd, buf))
-                .to_sgx_result())
+    fn read(mut self, fd: Fd, buf: *mut u8, len: usize) -> Self::FutRetread {
+        async {
+            unsafe {
+                Ok(from_raw_parts_mut_nonnull(buf, len)
+                    .and_then(|buf| self.0.read(fd, buf))
+                    .to_sgx_result())
+            }
         }
     }
 
-    fn read_alloc(&mut self, fd: Fd, buf: *mut ByteBuffer) -> UsercallResult<Result> {
-        unsafe {
-            Ok((|| {
-                let mut out = OutputBuffer::new(buf.as_mut().ok_or(IoErrorKind::InvalidInput)?);
-                if !out.buf.data.is_null() {
-                    return Err(IoErrorKind::InvalidInput.into());
-                }
-                self.0.read_alloc(fd, &mut out)
-            })()
-            .to_sgx_result())
+    fn read_alloc(mut self, fd: Fd, buf: *mut ByteBuffer) -> Self::FutRetread_alloc {
+        async {
+            unsafe {
+                Ok((|| {
+                    let mut out = OutputBuffer::new(buf.as_mut().ok_or(IoErrorKind::InvalidInput)?);
+                    if !out.buf.data.is_null() {
+                        return Err(IoErrorKind::InvalidInput.into());
+                    }
+                    self.0.read_alloc(fd, &mut out)
+                })()
+                    .to_sgx_result())
+            }
         }
     }
 
-    fn write(&mut self, fd: Fd, buf: *const u8, len: usize) -> UsercallResult<(Result, usize)> {
-        unsafe {
-            Ok(from_raw_parts_nonnull(buf, len)
-                .and_then(|buf| self.0.write(fd, buf))
-                .to_sgx_result())
+    fn write(mut self, fd: Fd, buf: *const u8, len: usize) -> Self::FutRetwrite {
+        async {
+            unsafe {
+                Ok(from_raw_parts_nonnull(buf, len)
+                    .and_then(|buf| self.0.write(fd, buf))
+                    .to_sgx_result())
+            }
         }
     }
 
-    fn flush(&mut self, fd: Fd) -> UsercallResult<Result> {
-        Ok(self.0.flush(fd).to_sgx_result())
+    fn flush(mut self, fd: Fd) -> Self::FutRetflush {
+        async {
+            Ok(self.0.flush(fd).to_sgx_result())
+        }
     }
 
-    fn close(&mut self, fd: Fd) -> UsercallResult<()> {
-        Ok(self.0.close(fd))
+    fn close(mut self, fd: Fd) -> Self::FutRetclose {
+        async {
+            Ok(self.0.close(fd))
+        }
     }
 
     fn bind_stream(
-        &mut self,
+        mut self,
         addr: *const u8,
         len: usize,
         local_addr: *mut ByteBuffer,
-    ) -> UsercallResult<(Result, Fd)> {
-        unsafe {
-            let mut local_addr = local_addr.as_mut().map(OutputBuffer::new);
-            Ok(from_raw_parts_nonnull(addr, len)
-                .and_then(|addr| self.0.bind_stream(addr, local_addr.as_mut()))
-                .to_sgx_result())
+    ) -> Self::FutRetbind_stream {
+        async {
+            unsafe {
+                let mut local_addr = local_addr.as_mut().map(OutputBuffer::new);
+                Ok(from_raw_parts_nonnull(addr, len)
+                    .and_then(|addr| self.0.bind_stream(addr, local_addr.as_mut()))
+                    .to_sgx_result())
+            }
         }
     }
 
     fn accept_stream(
-        &mut self,
+        mut self,
         fd: Fd,
         local_addr: *mut ByteBuffer,
         peer_addr: *mut ByteBuffer,
-    ) -> UsercallResult<(Result, Fd)> {
-        unsafe {
-            let mut local_addr = local_addr.as_mut().map(OutputBuffer::new);
-            let mut peer_addr = peer_addr.as_mut().map(OutputBuffer::new);
-            Ok(self
-                .0
-                .accept_stream(fd, local_addr.as_mut(), peer_addr.as_mut())
-                .to_sgx_result())
+    ) -> Self::FutRetaccept_stream {
+        async {
+            unsafe {
+                let mut local_addr = local_addr.as_mut().map(OutputBuffer::new);
+                let mut peer_addr = peer_addr.as_mut().map(OutputBuffer::new);
+                Ok(self
+                    .0
+                    .accept_stream(fd, local_addr.as_mut(), peer_addr.as_mut())
+                    .to_sgx_result())
+            }
         }
     }
 
     fn connect_stream(
-        &mut self,
+        mut self,
         addr: *const u8,
         len: usize,
         local_addr: *mut ByteBuffer,
         peer_addr: *mut ByteBuffer,
-    ) -> UsercallResult<(Result, Fd)> {
-        unsafe {
-            let mut local_addr = local_addr.as_mut().map(OutputBuffer::new);
-            let mut peer_addr = peer_addr.as_mut().map(OutputBuffer::new);
-            Ok(from_raw_parts_nonnull(addr, len)
-                .and_then(|addr| {
-                    self.0
-                        .connect_stream(addr, local_addr.as_mut(), peer_addr.as_mut())
-                })
-                .to_sgx_result())
+    ) -> Self::FutRetconnect_stream {
+        async {
+            unsafe {
+                let mut local_addr = local_addr.as_mut().map(OutputBuffer::new);
+                let mut peer_addr = peer_addr.as_mut().map(OutputBuffer::new);
+                Ok(from_raw_parts_nonnull(addr, len)
+                    .and_then(|addr| {
+                        self.0
+                            .connect_stream(addr, local_addr.as_mut(), peer_addr.as_mut())
+                    })
+                    .to_sgx_result())
+            }
         }
     }
 
-    fn launch_thread(&mut self) -> UsercallResult<Result> {
-        Ok(self.0.launch_thread().to_sgx_result())
-    }
-
-    fn exit(&mut self, panic: bool) -> EnclaveAbort<bool> {
-        self.0.exit(panic)
-    }
-
-    fn wait(&mut self, event_mask: u64, timeout: u64) -> UsercallResult<(Result, u64)> {
-        if event_mask == 0 && timeout == WAIT_INDEFINITE {
-            return Err(EnclaveAbort::IndefiniteWait);
+    fn launch_thread(mut self) -> Self::FutRetlaunch_thread {
+        async {
+            Ok(self.0.launch_thread().to_sgx_result())
         }
-
-        Ok(self.0.wait(event_mask, timeout).to_sgx_result())
     }
 
-    fn send(&mut self, event_set: u64, tcs: Option<Tcs>) -> UsercallResult<Result> {
-        Ok(self.0.send(event_set, tcs).to_sgx_result())
+    fn exit(mut self, panic: bool) -> Self::FutRetEnclaveAbort {
+        async {
+            self.0.exit(panic)
+        }
     }
 
-    fn insecure_time(&mut self) -> UsercallResult<u64> {
-        Ok(self.0.insecure_time())
+    fn wait(mut self, event_mask: u64, timeout: u64) -> Self::FutRetwait {
+        async {
+            if event_mask == 0 && timeout == WAIT_INDEFINITE {
+                return Err(EnclaveAbort::IndefiniteWait);
+            }
+
+            Ok(self.0.wait(event_mask, timeout).to_sgx_result())
+        }
     }
 
-    fn alloc(&mut self, size: usize, alignment: usize) -> UsercallResult<(Result, *mut u8)> {
-        Ok(self.0.alloc(size, alignment).to_sgx_result())
+    fn send(mut self, event_set: u64, tcs: Option<Tcs>) -> Self::FutRetsend {
+        async {
+            Ok(self.0.send(event_set, tcs).to_sgx_result())
+        }
     }
 
-    fn free(&mut self, ptr: *mut u8, size: usize, alignment: usize) -> UsercallResult<()> {
-        Ok(self.0.free(ptr, size, alignment).unwrap())
+    fn insecure_time(mut self) -> Self::FutRetinsecure_time {
+        async {
+            Ok(self.0.insecure_time())
+        }
+    }
+
+    fn alloc(mut self, size: usize, alignment: usize) -> Self::FutRetalloc {
+        async {
+            Ok(self.0.alloc(size, alignment).to_sgx_result())
+        }
+    }
+
+    fn free(mut self, ptr: *mut u8, size: usize, alignment: usize) -> Self::FutRetfree {
+        async {
+            Ok(self.0.free(ptr, size, alignment).unwrap())
+        }
     }
 
     fn async_queues(
-        &mut self,
+        mut self,
         usercall_queue: *mut FifoDescriptor<Usercall>,
         return_queue: *mut FifoDescriptor<Return>,
-    ) -> UsercallResult<Result> {
-        unsafe {
-            Ok((|| {
-                let usercall_queue = usercall_queue
-                    .as_mut()
-                    .ok_or(IoError::from(IoErrorKind::InvalidInput))?;
-                let return_queue = return_queue
-                    .as_mut()
-                    .ok_or(IoError::from(IoErrorKind::InvalidInput))?;
-                self.0.async_queues(usercall_queue, return_queue)
-            })()
-            .to_sgx_result())
+    ) -> Self::FutRetasync_queues {
+        async {
+            unsafe {
+                Ok((|| {
+                    let usercall_queue = usercall_queue
+                        .as_mut()
+                        .ok_or(IoError::from(IoErrorKind::InvalidInput))?;
+                    let return_queue = return_queue
+                        .as_mut()
+                        .ok_or(IoError::from(IoErrorKind::InvalidInput))?;
+                    self.0.async_queues(usercall_queue, return_queue)
+                })()
+                    .to_sgx_result())
+            }
         }
     }
 }

@@ -267,7 +267,7 @@ impl fmt::Pointer for TcsAddress {
 
 struct StoppedTcs {
     tcs: ErasedTcs,
-    event_queue: Receiver<u8>,
+    event_queue: tokio::sync::mpsc::Receiver<u8>,
 }
 
 struct IOHandlerInput<'a> {
@@ -279,7 +279,7 @@ struct IOHandlerInput<'a> {
 struct RunningTcs {
     pending_event_set: u8,
     pending_events: VecDeque<u8>,
-    event_queue: Receiver<u8>,
+    event_queue: tokio::sync::mpsc::Receiver<u8>,
     mode: EnclaveEntry,
 }
 
@@ -408,7 +408,7 @@ impl EnclaveState {
         work_sender: crossbeam::crossbeam_channel::Sender<Work>,
     ) -> StdResult<(u64, u64), EnclaveAbort<EnclavePanic>> {
         let (tx_return_channel, mut rx_return_channel) = tokio::sync::mpsc::channel(256);
-        let return_future = async {
+        let return_future = async move {
             while let Ok((Some(work), stream)) = rx_return_channel.into_future().compat().await {
                 rx_return_channel = stream;
                 let (my_result, mode) = work;
@@ -440,7 +440,7 @@ impl EnclaveState {
                 };
                 return res;
             }
-            // please confirm if this is correct;
+            // !!! please confirm if this is correct;
             unreachable!();
         };
         let tx_clone = tx_return_channel.clone();
@@ -463,7 +463,7 @@ impl EnclaveState {
                                     work_sender: &work_sender_clone,
                                 };
                                 let (p1, p2, p3, p4, p5) = usercall.parameters();
-                                dispatch(&mut Handler(&mut input), p1, p2, p3, p4, p5)
+                                dispatch(&mut Handler(input), p1, p2, p3, p4, p5).await
                             };
                             let ret = match result {
                                 Ok(ret) => {

@@ -15,6 +15,8 @@ use fortanix_sgx_abi::*;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use futures::future::Future;
+
 type Register = u64;
 
 trait RegisterArgument {
@@ -31,6 +33,20 @@ trait ReturnValue {
     fn into_registers(self) -> DispatchResult;
 }
 
+macro_rules! define_future_types {
+    ($f:ident !) => ();
+    ($f:ident $r:ty) => {
+            paste::item! {
+                type [<FutRet $f>] : Future<Output = UsercallResult<$r>>;
+            }
+        };
+    ($f:ident ) => {
+            paste::item! {
+                type [<FutRet $f>] : Future<Output = UsercallResult<()>>;
+            }
+        };
+     () => ();
+}
 macro_rules! define_usercalls {
     // Using `$r:tt` because `$r:ty` doesn't match ! in `dispatch_return_type`
     ($(fn $f:ident($($n:ident: $t:ty),*) $(-> $r:tt)*; )*) => {
@@ -42,8 +58,11 @@ macro_rules! define_usercalls {
         }
 
         pub(super) trait Usercalls {
-            $(fn $f(&mut self, $($n: $t),*) -> dispatch_return_type!($(-> $r)*);)*
-
+            type FutRetEnclaveAbort : Future<Output = EnclaveAbort>;
+            type FutRetEmpty : Future<Output = UsercallResult<()>>;
+            paste::item! {
+                $(define_future_types!($f $($r)*); fn $f(&mut self, $($n: $t),*) -> dispatch_return_type!($(-> $r )* $f);)*
+            }
             fn other(&mut self, n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> DispatchResult {
                 Err($crate::usercalls::EnclaveAbort::InvalidUsercall(n))
             }
@@ -52,11 +71,11 @@ macro_rules! define_usercalls {
         }
 
         #[allow(unused_variables)]
-        pub(super) fn dispatch<H: Usercalls>(handler: &mut H, n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> DispatchResult {
+        pub(super) async fn dispatch<H: Usercalls>(handler: &mut H, n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> DispatchResult {
             // using if/else because you can't match an integer against enum variants
             let ret = $(
                 if n == UsercallList::$f as Register {
-                    ReturnValue::into_registers(unsafe{enclave_usercalls_internal_define_usercalls!(handler, replace_args a1,a2,a3,a4 $f($($n),*))})
+                    ReturnValue::into_registers(unsafe{enclave_usercalls_internal_define_usercalls!(handler, replace_args a1,a2,a3,a4 $f($($n),*)).await})
                 } else
             )*
             {
@@ -167,9 +186,17 @@ impl<T: RegisterArgument, U: RegisterArgument> ReturnValue for UsercallResult<(T
 }
 
 macro_rules! dispatch_return_type {
-    (-> !) => { EnclaveAbort };
-    (-> $r:ty) => { UsercallResult<$r> };
-    () => { UsercallResult<()> };
+    (-> ! $f:ident) => { Self::FutRetEnclaveAbort };
+    (-> $r:tt $f:ident) => {
+                paste::item! {
+                    Self::[<FutRet $f>]
+                }
+            };
+    ($f:ident) => {
+                    paste::item! {
+                        Self::[<FutRet $f>]
+                    }
+            };
 }
 
 macro_rules! enclave_usercalls_internal_define_usercalls {
