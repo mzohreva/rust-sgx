@@ -37,12 +37,12 @@ macro_rules! define_future_types {
     ($f:ident !) => ();
     ($f:ident $r:ty) => {
             paste::item! {
-                type [<FutRet $f>] : Future<Output = UsercallResult<$r>>;
+                type [<FutRet $f>] : Future<Output = UsercallResult<$r>> +'a;
             }
         };
     ($f:ident ) => {
             paste::item! {
-                type [<FutRet $f>] : Future<Output = UsercallResult<()>>;
+                type [<FutRet $f>] : Future<Output = UsercallResult<()>> +'a;
             }
         };
      () => ();
@@ -57,21 +57,17 @@ macro_rules! define_usercalls {
             $($f,)*
         }
 
-        pub(super) trait Usercalls {
-            type FutRetEnclaveAbort : Future<Output = EnclaveAbort>;
-            type FutRetEmpty : Future<Output = UsercallResult<()>>;
-            paste::item! {
-                $(define_future_types!($f $($r)*); fn $f(&mut self, $($n: $t),*) -> dispatch_return_type!($(-> $r )* $f);)*
-            }
+        pub(super) trait Usercalls <'a>{
+            $(fn $f(&'a mut self, $($n: $t),*) -> dispatch_return_type!($(-> $r )* $f);)*
             fn other(&mut self, n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> DispatchResult {
                 Err($crate::usercalls::EnclaveAbort::InvalidUsercall(n))
             }
 
-            fn is_exiting(&self) -> bool;
+            fn is_exiting(&'a self) -> bool;
         }
 
         #[allow(unused_variables)]
-        pub(super) async fn dispatch<H: Usercalls>(handler: &mut H, n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> DispatchResult {
+        pub(super) async fn dispatch<'a, H: Usercalls<'a>>(handler: &'a mut  H, n: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> DispatchResult {
             // using if/else because you can't match an integer against enum variants
             let ret = $(
                 if n == UsercallList::$f as Register {
@@ -186,16 +182,12 @@ impl<T: RegisterArgument, U: RegisterArgument> ReturnValue for UsercallResult<(T
 }
 
 macro_rules! dispatch_return_type {
-    (-> ! $f:ident) => { Self::FutRetEnclaveAbort };
+    (-> ! $f:ident) => { std::pin::Pin<Box<dyn Future<Output = EnclaveAbort> +'a>> };
     (-> $r:tt $f:ident) => {
-                paste::item! {
-                    Self::[<FutRet $f>]
-                }
+                std::pin::Pin<Box<dyn Future<Output = UsercallResult<$r>> +'a>>
             };
     ($f:ident) => {
-                    paste::item! {
-                        Self::[<FutRet $f>]
-                    }
+                std::pin::Pin<Box<dyn Future<Output = UsercallResult<()>> +'a>>
             };
 }
 

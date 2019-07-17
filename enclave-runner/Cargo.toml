@@ -5,7 +5,6 @@ authors = ["Fortanix, Inc."]
 license = "MPL-2.0"
 edition = "2018"
 description = """
-edition = "2018"
 High-level abstractions for running SGX enclaves.
 
 This crate can be used to load and interface with SGX applications compiled for
