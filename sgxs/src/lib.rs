@@ -16,6 +16,8 @@ extern crate foreign_types;
 extern crate openssl;
 #[cfg(feature = "crypto-openssl")]
 extern crate openssl_sys;
+#[cfg(feature = "crypto-mbedtls")]
+extern crate mbedtls;
 extern crate sgx_isa as abi;
 extern crate time;
 #[macro_use]

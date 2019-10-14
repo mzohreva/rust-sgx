@@ -12,8 +12,17 @@ use std::{arch, str};
 
 use failure::{Error, ResultExt};
 
-use openssl::hash::Hasher;
-use openssl::pkey::PKey;
+#[cfg(feature = "crypto-openssl")]
+use openssl::{
+    hash::Hasher,
+    pkey::PKey,
+};
+
+#[cfg(feature = "crypto-mbedtls")]
+use mbedtls::{
+    hash::Md as Hasher,
+    pk::Pk,
+};
 
 use sgx_isa::{Attributes, AttributesFlags, Miscselect, Sigstruct};
 use sgxs::loader::{Load, MappingInfo, Tcs};
@@ -163,8 +172,15 @@ impl<'a> EnclaveBuilder<'a> {
             signer.miscselect(miscselect, !0);
         }
 
-        let key = PKey::private_key_from_der(include_bytes!("dummy.key")).unwrap();
-        Ok(signer.sign::<_, Hasher>(&*key.rsa().unwrap())?)
+        #[cfg(feature = "crypto-openssl")] {
+            let key = PKey::private_key_from_der(include_bytes!("dummy.key")).unwrap();
+            Ok(signer.sign::<_, Hasher>(&*key.rsa().unwrap())?)
+        }
+
+        #[cfg(feature = "crypto-mbedtls")] {
+            let key = sgxs::crypto::PublicKey::new(Pk::from_private_key(include_bytes!("dummy.key"), None).unwrap());
+            Ok(signer.sign::<_, Hasher>(&key)?)
+        }
     }
 
     pub fn dummy_signature(&mut self) -> &mut Self {

@@ -9,7 +9,7 @@
 use super::*;
 
 const N: &'static [u8] = include_bytes!("../../tests/data/sig1.key_n.bin");
-const KEY: &'static [u8] = include_bytes!("../../tests/data/sig1.key.pem");
+const KEY: &'static str = include_str!("../../tests/data/sig1.key.pem");
 const H: &'static [u8] = include_bytes!("../../tests/data/sig1.data.bin");
 const S: &'static [u8] = include_bytes!("../../tests/data/sig1.sig.bin");
 const Q1: &'static [u8] = include_bytes!("../../tests/data/sig1.q1.bin");
@@ -30,6 +30,17 @@ fn test_rsa<K: SgxRsaOps>(key: &K) {
 fn openssl_rsa() {
     use openssl::pkey::PKey;
 
-    let key = PKey::private_key_from_pem(KEY).unwrap();
+    let key = PKey::private_key_from_pem(KEY.as_bytes()).unwrap();
     test_rsa(&*key.rsa().unwrap())
+}
+
+#[cfg(feature = "crypto-mbedtls")]
+#[test]
+fn mbedtls_rsa() {
+    use mbedtls::pk::Pk;
+    use crate::crypto::mbedtls::PublicKey;
+
+    let pem = format!("{}\0", KEY);
+    let key = PublicKey::new(Pk::from_private_key(pem.as_bytes(), None).unwrap());
+    test_rsa(&key)
 }

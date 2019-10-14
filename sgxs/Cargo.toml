@@ -24,9 +24,11 @@ failure_derive = "0.1.1"                              # MIT/Apache-2.0
 openssl = { version = "0.10", optional = true }       # Apache-2.0
 openssl-sys = { version = "0.9.24", optional = true } # Apache-2.0
 foreign-types = { version = "0.3", optional = true }  # MIT/Apache-2.0
+mbedtls = { version = "0.4", features = ["std", "aesni", "rdrand"], optional = true } # Apache-2.0/GPL-2.0+
 
 [features]
 crypto-openssl = ["openssl", "openssl-sys", "foreign-types"]
+crypto-mbedtls = ["mbedtls"]
 
 [dev-dependencies]
 crypto-hash = "0.3" # MIT
