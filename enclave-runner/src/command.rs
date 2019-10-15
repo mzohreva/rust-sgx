@@ -23,6 +23,8 @@ pub struct Command {
     usercall_ext : Option<Box<dyn UsercallExtension>>,
 }
 
+unsafe impl Send for Command { }
+
 impl MappingInfo for Command {
     fn address(&self) -> *mut c_void {
         self.address
