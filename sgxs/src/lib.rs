@@ -18,6 +18,10 @@ extern crate openssl;
 extern crate openssl_sys;
 #[cfg(feature = "crypto-mbedtls")]
 extern crate mbedtls;
+#[cfg(feature = "crypto-external")]
+extern crate num_bigint;
+#[cfg(feature = "crypto-external")]
+extern crate sha2;
 extern crate sgx_isa as abi;
 extern crate time;
 #[macro_use]

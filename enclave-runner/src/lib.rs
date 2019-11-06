@@ -13,6 +13,8 @@
 extern crate mbedtls;
 #[cfg(feature = "crypto-openssl")]
 extern crate openssl;
+#[cfg(feature = "crypto-external")]
+extern crate sha2;
 extern crate sgx_isa;
 extern crate sgxs;
 #[macro_use]

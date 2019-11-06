@@ -24,6 +24,9 @@ use mbedtls::{
     pk::Pk,
 };
 
+#[cfg(feature = "crypto-external")]
+use sha2::Sha256 as Hasher;
+
 use sgx_isa::{Attributes, AttributesFlags, Miscselect, Sigstruct};
 use sgxs::loader::{Load, MappingInfo, Tcs};
 use sgxs::sigstruct::{self, EnclaveHash, Signer};
@@ -178,7 +181,12 @@ impl<'a> EnclaveBuilder<'a> {
         }
 
         #[cfg(feature = "crypto-mbedtls")] {
-            let key = sgxs::crypto::PublicKey::new(Pk::from_private_key(include_bytes!("dummy.key"), None).unwrap());
+            let key = sgxs::crypto::mbedtls::PrivateKey::new(Pk::from_private_key(include_bytes!("dummy.key"), None).unwrap());
+            Ok(signer.sign::<_, Hasher>(&key)?)
+        }
+
+        #[cfg(feature = "crypto-external")] {
+            let key = sgxs::crypto::external::PrivateKey::from_private_key_der(include_bytes!("dummy.key")).unwrap();
             Ok(signer.sign::<_, Hasher>(&key)?)
         }
     }
