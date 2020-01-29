@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, fmt};
 use std::pin::Pin;
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 use std::time;
@@ -268,13 +269,13 @@ impl AsyncStreamAdapter {
 }
 
 struct AsyncStreamContainer {
-    inner: futures::lock::Mutex<Pin<Box<AsyncStreamAdapter>>>,
+    inner: RefCell<Pin<Box<AsyncStreamAdapter>>>,
 }
 
 impl AsyncStreamContainer {
     fn new(s: Box<dyn AsyncStream>) -> Self {
         AsyncStreamContainer {
-            inner: futures::lock::Mutex::new(Box::pin(AsyncStreamAdapter {
+            inner: RefCell::new(Box::pin(AsyncStreamAdapter {
                 stream: s.into(),
                 read_queue: VecDeque::new(),
                 write_queue: VecDeque::new(),
@@ -284,47 +285,19 @@ impl AsyncStreamContainer {
     }
 
     async fn async_read(&self, buf: &mut [u8]) -> IoResult<usize> {
-        poll_fn(|cx| {
-            let inner_ref = &mut self.inner.lock();
-            let mut inner = Pin::new(inner_ref);
-            match inner.as_mut().poll(cx) {
-                Poll::Ready(mut adapter) => adapter.as_mut().poll_read(cx, buf),
-                Poll::Pending => Poll::Pending,
-            }
-        }).await
+        poll_fn(|cx| self.inner.borrow_mut().as_mut().poll_read(cx, buf)).await
     }
 
     async fn async_read_alloc(&self) -> IoResult<Vec<u8>> {
-        poll_fn(|cx| {
-            let inner_ref = &mut self.inner.lock();
-            let mut inner = Pin::new(inner_ref);
-            match inner.as_mut().poll(cx) {
-                Poll::Ready(mut adapter) => adapter.as_mut().poll_read_alloc(cx),
-                Poll::Pending => Poll::Pending,
-            }
-        }).await
+        poll_fn(|cx| self.inner.borrow_mut().as_mut().poll_read_alloc(cx)).await
     }
 
     async fn async_write(&self, buf: &[u8]) -> IoResult<usize> {
-        poll_fn(|cx| {
-            let inner_ref = &mut self.inner.lock();
-            let mut inner = Pin::new(inner_ref);
-            match inner.as_mut().poll(cx) {
-                Poll::Ready(mut adapter) => adapter.as_mut().poll_write(cx, buf),
-                Poll::Pending => Poll::Pending,
-            }
-        }).await
+        poll_fn(|cx| self.inner.borrow_mut().as_mut().poll_write(cx, buf)).await
     }
 
     async fn async_flush(&self) -> IoResult<()> {
-        poll_fn(|cx| {
-            let inner_ref = &mut self.inner.lock();
-            let mut inner = Pin::new(inner_ref);
-            match inner.as_mut().poll(cx) {
-                Poll::Ready(mut adapter) => adapter.as_mut().poll_flush(cx),
-                Poll::Pending => Poll::Pending,
-            }
-        }).await
+        poll_fn(|cx| self.inner.borrow_mut().as_mut().poll_flush(cx)).await
     }
 }
 
@@ -355,13 +328,13 @@ impl AsyncListenerAdapter {
 }
 
 struct AsyncListenerContainer {
-    inner: futures::lock::Mutex<Pin<Box<AsyncListenerAdapter>>>,
+    inner: RefCell<Pin<Box<AsyncListenerAdapter>>>,
 }
 
 impl AsyncListenerContainer {
     fn new(l: Box<dyn AsyncListener>) -> Self {
         AsyncListenerContainer {
-            inner: futures::lock::Mutex::new(Pin::new(Box::new(AsyncListenerAdapter {
+            inner: RefCell::new(Pin::new(Box::new(AsyncListenerAdapter {
                 listener: l.into(),
                 accept_queue: VecDeque::new(),
             }))),
@@ -371,10 +344,7 @@ impl AsyncListenerContainer {
     async fn async_accept(&self, local_addr: Option<&mut String>, peer_addr: Option<&mut String>) -> IoResult<Option<Box<dyn AsyncStream>>> {
         let mut local_addr_owned: Option<String> = if local_addr.is_some() { Some(String::new()) } else { None };
         let mut peer_addr_owned: Option<String> = if peer_addr.is_some() { Some(String::new()) } else { None };
-        let lock = &mut self.inner.lock().await;
-        let res = poll_fn(|cx| {
-           lock.as_mut().poll_accept(cx, local_addr_owned.as_mut(), peer_addr_owned.as_mut())
-        }).await;
+        let res = poll_fn(|cx| self.inner.borrow_mut().as_mut().poll_accept(cx, local_addr_owned.as_mut(), peer_addr_owned.as_mut())).await;
 
         if let Some(local_addr) = local_addr {
             *local_addr = local_addr_owned.unwrap();
@@ -475,10 +445,43 @@ struct StoppedTcs {
     event_queue: futures::channel::mpsc::UnboundedReceiver<u8>,
 }
 
+struct EnclaveFileDescriptors {
+    fds: RefCell<FnvHashMap<Fd, Rc<AsyncFileDesc>>>,
+    last_fd: AtomicUsize,
+}
+
+impl EnclaveFileDescriptors {
+    fn new() -> Self {
+        let mut fds = FnvHashMap::default();
+
+        fds.insert(
+            FD_STDIN,
+            Rc::new(AsyncFileDesc::stream(Box::new(ReadOnly(
+                Box::pin(Stdin)
+            )))),
+        );
+        fds.insert(
+            FD_STDOUT,
+            Rc::new(AsyncFileDesc::stream(Box::new(WriteOnly(
+                Box::pin(tokio::io::stdout()),
+            )))),
+        );
+        fds.insert(
+            FD_STDERR,
+            Rc::new(AsyncFileDesc::stream(Box::new(WriteOnly(
+                Box::pin(tokio::io::stderr()),
+            )))),
+        );
+        let last_fd = AtomicUsize::new(fds.keys().cloned().max().unwrap() as _);
+        Self { fds: RefCell::new(fds), last_fd }
+    }
+}
+
 struct IOHandlerInput<'tcs> {
     tcs: &'tcs mut RunningTcs,
-    enclave: Arc<EnclaveState>,
     work_sender: &'tcs crossbeam::crossbeam_channel::Sender<Work>,
+    enclave: Arc<EnclaveState>,
+    enclave_fds: Rc<EnclaveFileDescriptors>,
 }
 
 struct RunningTcs {
@@ -523,8 +526,6 @@ impl EnclaveKind {
 pub(crate) struct EnclaveState {
     kind: EnclaveKind,
     event_queues: FnvHashMap<TcsAddress, futures::channel::mpsc::UnboundedSender<u8>>,
-    fds: Mutex<FnvHashMap<Fd, Arc<AsyncFileDesc>>>,
-    last_fd: AtomicUsize,
     exiting: AtomicBool,
     usercall_ext: Box<dyn UsercallExtension>,
     threads_queue: crossbeam::queue::SegQueue<StoppedTcs>,
@@ -579,28 +580,6 @@ impl EnclaveState {
         usercall_ext: Option<Box<dyn UsercallExtension>>,
         threads_vector: Vec<ErasedTcs>,
     ) -> (tokio::runtime::Runtime, Arc<Self>) {
-        let mut fds = FnvHashMap::default();
-
-        fds.insert(
-            FD_STDIN,
-            Arc::new(AsyncFileDesc::stream(Box::new(ReadOnly(
-                Box::pin(Stdin)
-            )))),
-        );
-        fds.insert(
-            FD_STDOUT,
-            Arc::new(AsyncFileDesc::stream(Box::new(WriteOnly(
-                Box::pin(tokio::io::stdout()),
-            )))),
-        );
-        fds.insert(
-            FD_STDERR,
-            Arc::new(AsyncFileDesc::stream(Box::new(WriteOnly(
-                Box::pin(tokio::io::stderr()),
-            )))),
-        );
-        let last_fd = AtomicUsize::new(fds.keys().cloned().max().unwrap() as _);
-
         let usercall_ext = usercall_ext.unwrap_or_else(|| Box::new(UsercallExtensionDefault));
 
         let threads_queue = crossbeam::queue::SegQueue::new();
@@ -614,8 +593,6 @@ impl EnclaveState {
         Arc::new(EnclaveState {
             kind,
             event_queues,
-            fds: Mutex::new(fds),
-            last_fd,
             exiting: AtomicBool::new(false),
             usercall_ext,
             threads_queue,
@@ -671,20 +648,23 @@ impl EnclaveState {
         };
         let enclave_clone = enclave.clone();
         let io_future = async move {
+            let enclave_fds = Rc::new(EnclaveFileDescriptors::new());
             let mut recv_queue = io_queue_receive.into_future();
             while let (Some(work), stream) = recv_queue.await {
                 let work_sender_clone = work_sender.clone();
                 let tx_clone = tx_return_channel.clone();
                 let enclave_clone = enclave_clone.clone();
+                let enclave_fds = enclave_fds.clone();
                 recv_queue = stream.into_future();
                 let (coresult, mut state, buf) = work;
                 match coresult {
                     CoResult::Yield(usercall) => {
                         let fut = async move {
                             let mut input = IOHandlerInput {
-                                enclave: enclave_clone.clone(),
                                 tcs: &mut state,
+                                enclave: enclave_clone.clone(),
                                 work_sender: &work_sender_clone,
+                                enclave_fds: enclave_fds.clone(),
                             };
                             let handler = Handler(&mut input);
                             let (_handler, result) = {
@@ -761,7 +741,7 @@ impl EnclaveState {
         };
 
         let select_fut =
-            futures::future::select(return_future.boxed(), io_future.boxed()).map( |either| {
+            futures::future::select(return_future.boxed_local(), io_future.boxed_local()).map( |either| {
                 match either {
                     Either::Left((x, _)) => x,
                     _ => unreachable!(),
@@ -1071,21 +1051,16 @@ impl UsercallExtension for UsercallExtensionDefault {}
 
 #[allow(unused_variables)]
 impl<'tcs> IOHandlerInput<'tcs> {
-    async fn lookup_fd(&self, fd: Fd) -> IoResult<Arc<AsyncFileDesc>> {
-        match self.enclave.fds.lock().await.get(&fd) {
+    fn lookup_fd(&self, fd: Fd) -> IoResult<Rc<AsyncFileDesc>> {
+        match self.enclave_fds.fds.borrow().get(&fd) {
             Some(stream) => Ok(stream.clone()),
-            None => Err(IoErrorKind::BrokenPipe.into()), // FIXME: Rust normally maps Unix EBADF to `Other`
+            None => Err(IoErrorKind::BrokenPipe.into()),
         }
     }
 
-    async fn alloc_fd(&self, stream: AsyncFileDesc) -> Fd {
-        let fd = (self
-            .enclave
-            .last_fd
-            .fetch_add(1, Ordering::Relaxed)
-            .checked_add(1)
-            .expect("FD overflow")) as Fd;
-        let prev = self.enclave.fds.lock().await.insert(fd, Arc::new(stream));
+    fn alloc_fd(&self, stream: AsyncFileDesc) -> Fd {
+        let fd = self.enclave_fds.last_fd.fetch_add(1, Ordering::Relaxed).checked_add(1).expect("FD overflow") as Fd;
+        let prev = self.enclave_fds.fds.borrow_mut().insert(fd, Rc::new(stream));
         debug_assert!(prev.is_none());
         fd
     }
@@ -1097,13 +1072,13 @@ impl<'tcs> IOHandlerInput<'tcs> {
 
     #[inline(always)]
     async fn read(&self, fd: Fd, buf: &mut [u8]) -> IoResult<usize> {
-        let file_desc = self.lookup_fd(fd).await?;
+        let file_desc = self.lookup_fd(fd)?;
         file_desc.as_stream()?.async_read(buf).await
     }
 
     #[inline(always)]
     async fn read_alloc(&self, fd: Fd, buf: &mut OutputBuffer<'tcs>) -> IoResult<()> {
-        let file_desc = self.lookup_fd(fd).await?;
+        let file_desc = self.lookup_fd(fd)?;
         let v = file_desc.as_stream()?.async_read_alloc().await?;
         buf.set(v);
         Ok(())
@@ -1111,19 +1086,19 @@ impl<'tcs> IOHandlerInput<'tcs> {
 
     #[inline(always)]
     async fn write(&self, fd: Fd, buf: &[u8]) -> IoResult<usize> {
-        let file_desc = self.lookup_fd(fd).await?;
+        let file_desc = self.lookup_fd(fd)?;
         return file_desc.as_stream()?.async_write(buf).await;
     }
 
     #[inline(always)]
     async fn flush(&self, fd: Fd) -> IoResult<()> {
-        let file_desc = self.lookup_fd(fd).await?;
+        let file_desc = self.lookup_fd(fd)?;
         file_desc.as_stream()?.async_flush().await
     }
 
     #[inline(always)]
     async fn close(&self, fd: Fd) {
-        self.enclave.fds.lock().await.remove(&fd);
+        self.enclave_fds.fds.borrow_mut().remove(&fd);
     }
 
     #[inline(always)]
@@ -1142,7 +1117,7 @@ impl<'tcs> IOHandlerInput<'tcs> {
             if let Some(local_addr) = local_addr {
                 local_addr.set(local_addr_str.unwrap().into_bytes());
             }
-            return Ok(self.alloc_fd(AsyncFileDesc::listener(stream_ext)).await);
+            return Ok(self.alloc_fd(AsyncFileDesc::listener(stream_ext)));
         }
 
         // !!! see if there's a better way
@@ -1150,7 +1125,7 @@ impl<'tcs> IOHandlerInput<'tcs> {
         if let Some(local_addr) = local_addr {
             local_addr.set(socket.local_addr()?.to_string().into_bytes());
         }
-        Ok(self.alloc_fd(AsyncFileDesc::listener(Box::new(socket))).await)
+        Ok(self.alloc_fd(AsyncFileDesc::listener(Box::new(socket))))
     }
 
     #[inline(always)]
@@ -1163,7 +1138,7 @@ impl<'tcs> IOHandlerInput<'tcs> {
         let mut local_addr_str = local_addr.as_ref().map(|_| String::new());
         let mut peer_addr_str = peer_addr.as_ref().map(|_| String::new());
 
-        let file_desc = self.lookup_fd(fd).await?;
+        let file_desc = self.lookup_fd(fd)?;
         let stream = file_desc.as_listener()?.async_accept(local_addr_str.as_mut(), peer_addr_str.as_mut()).await?.unwrap();
 
         if let Some(local_addr) = local_addr {
@@ -1172,7 +1147,7 @@ impl<'tcs> IOHandlerInput<'tcs> {
         if let Some(peer_addr) = peer_addr {
             peer_addr.set(&peer_addr_str.unwrap().into_bytes()[..])
         }
-        Ok(self.alloc_fd(AsyncFileDesc::stream(stream)).await)
+        Ok(self.alloc_fd(AsyncFileDesc::stream(stream)))
     }
 
     #[inline(always)]
@@ -1196,7 +1171,7 @@ impl<'tcs> IOHandlerInput<'tcs> {
             if let Some(peer_addr) = peer_addr {
                 peer_addr.set(peer_addr_str.unwrap().into_bytes());
             }
-            return Ok(self.alloc_fd(AsyncFileDesc::stream(stream_ext)).await);
+            return Ok(self.alloc_fd(AsyncFileDesc::stream(stream_ext)));
         }
         let stream = tokio::net::TcpStream::connect(&addr.to_socket_addrs()?.as_mut_slice()[0])
             .await?;
@@ -1212,7 +1187,7 @@ impl<'tcs> IOHandlerInput<'tcs> {
                 Err(_) => peer_addr.set(&b"error"[..]),
             }
         }
-        Ok(self.alloc_fd(AsyncFileDesc::stream(Box::new(stream))).await)
+        Ok(self.alloc_fd(AsyncFileDesc::stream(Box::new(stream))))
     }
 
     #[inline(always)]
