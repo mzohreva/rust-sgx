@@ -569,6 +569,7 @@ dependencies = [
  "openssl",
  "sgx-isa",
  "sgxs",
+ "spin",
  "tokio 0.2.22",
 ]
 
